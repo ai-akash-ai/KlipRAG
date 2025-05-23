@@ -433,4 +433,15 @@ async def health_check():
         raise HTTPException(status_code=503, detail=f"Service unhealthy: {str(e)}")
 
 if __name__ == "__main__":
-    uvicorn.run("original-server:app", host="0.0.0.0", port=port, reload=True)
+    # Get port from environment variable (Render sets this)
+    port = int(os.environ.get("PORT", 8000))
+    
+    # Don't use reload in production
+    reload_setting = os.environ.get("ENVIRONMENT", "development") == "development"
+    
+    uvicorn.run(
+        "original-server:app", 
+        host="0.0.0.0", 
+        port=port, 
+        reload=reload_setting  # Only reload in development
+    )
