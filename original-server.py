@@ -23,6 +23,8 @@ from langchain_core.messages import HumanMessage, AIMessage
 load_dotenv()
 MONGO_URI = os.getenv("MONGO_URI")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+port = int(os.environ.get("PORT", 8000))
+
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -431,4 +433,4 @@ async def health_check():
         raise HTTPException(status_code=503, detail=f"Service unhealthy: {str(e)}")
 
 if __name__ == "__main__":
-    uvicorn.run("original-server:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("original-server:app", host="0.0.0.0", port=port, reload=True)
