@@ -54,7 +54,7 @@ async def startup_event():
         print("Whisper model loaded successfully")
         
         # Create MongoDB indexes
-        conversations_collection = client["bem"]["user_conversations"]
+        conversations_collection = client["klip"]["user_conversations"]
         conversations_collection.create_index([("user_id", 1), ("timestamp", -1)])
         print("MongoDB indexes created successfully")
     except Exception as e:
@@ -66,14 +66,14 @@ embeddings = GoogleGenerativeAIEmbeddings(
     task_type="RETRIEVAL_QUERY"
 )
 client = MongoClient(MONGO_URI)
-db = client["bem"]
-collection = db["flattened_expenses_items"]
+db = client["klip"]
+collection = db["flattened_manual_expenses"]
 conversations_collection = db["user_conversations_items"]
 
 vector_store = MongoDBAtlasVectorSearch(
     collection=collection,
     embedding=embeddings,
-    index_name="receipts_vector_index_items"
+    index_name="receipts_vector_index_dev"
 )
 
 # Initialize LLM
@@ -433,15 +433,4 @@ async def health_check():
         raise HTTPException(status_code=503, detail=f"Service unhealthy: {str(e)}")
 
 if __name__ == "__main__":
-    # Get port from environment variable (Render sets this)
-    port = int(os.environ.get("PORT", 8000))
-    
-    # Don't use reload in production
-    reload_setting = os.environ.get("ENVIRONMENT", "development") == "development"
-    
-    uvicorn.run(
-        "original-server:app", 
-        host="0.0.0.0", 
-        port=port, 
-        reload=reload_setting  # Only reload in development
-    )
+    uvicorn.run("original-server:app", host="0.0.0.0", port=port, reload=True)
