@@ -59,7 +59,7 @@ with st.sidebar:
     # Clear chat history
     if st.button("Clear Chat History"):
         try:
-            response = requests.delete(f"{API_URL}/history/{st.session_state.user_id}")
+            response = requests.delete(f"{API_URL}/history?user_id={st.session_state.user_id}")
             if response.status_code == 200:
                 st.session_state.messages = []
                 st.success("Chat history cleared!")
@@ -97,7 +97,7 @@ status_placeholder = st.empty()
 # Function to load chat history from API
 def load_chat_history():
     try:
-        response = requests.get(f"{API_URL}/history/{st.session_state.user_id}")
+        response = requests.get(f"{API_URL}/history?user_id={st.session_state.user_id}")
         if response.status_code == 200:
             history_data = response.json()
             st.session_state.messages = history_data["messages"]
@@ -254,9 +254,9 @@ def handle_voice_recording():
                     # Prepare the file for upload
                     files = {'file': ('audio.wav', audio_bytes, 'audio/wav')}
                     
-                    # Send the audio to the voice-query endpoint
+                    # Send the audio to the voice-query endpoint with user_id as a query parameter
                     response = requests.post(
-                        f"{API_URL}/voice-query/{st.session_state.user_id}",
+                        f"{API_URL}/voice-query?user_id={st.session_state.user_id}",
                         files=files
                     )
                     
