@@ -107,10 +107,12 @@ class TranscriptionResponse(BaseModel):
     success: bool
     message: str
     text: Optional[str] = None
+    transcription_time: Optional[float] = None
 
 class VoiceQueryResponse(BaseModel):
     transcription: TranscriptionResponse
     query_response: Optional[QueryResponse] = None
+    llm_processing_time: Optional[float] = None
 
 class MessageRequest(BaseModel):
     role: str
@@ -269,10 +271,14 @@ async def transcribe_audio(file: UploadFile = File(...)):
         return TranscriptionResponse(
             success=False,
             message="Whisper model not loaded correctly",
-            text=None
+            text=None,
+            transcription_time=None
         )
     
     try:
+        # Start timing for transcription
+        transcription_start_time = time.time()
+        
         # Create a temporary file to save the uploaded audio
         temp_dir = tempfile.gettempdir()
         file_id = str(uuid.uuid4())
@@ -286,6 +292,9 @@ async def transcribe_audio(file: UploadFile = File(...)):
         result = model.transcribe(audio_path)
         transcript = result["text"]
         
+        # Calculate transcription time
+        transcription_time = time.time() - transcription_start_time
+        
         # Clean up the temporary file
         try:
             os.remove(audio_path)
@@ -295,14 +304,17 @@ async def transcribe_audio(file: UploadFile = File(...)):
         return TranscriptionResponse(
             success=True,
             message="Transcription completed successfully",
-            text=transcript
+            text=transcript,
+            transcription_time=round(transcription_time, 3)
         )
     
     except Exception as e:
+        transcription_time = time.time() - transcription_start_time if 'transcription_start_time' in locals() else None
         return TranscriptionResponse(
             success=False,
             message=f"Error during transcription: {str(e)}",
-            text=None
+            text=None,
+            transcription_time=round(transcription_time, 3) if transcription_time else None
         )
 
 @app.post("/voice-query", response_model=VoiceQueryResponse)
@@ -315,40 +327,47 @@ async def voice_query(
     if not user_id:
         raise HTTPException(status_code=400, detail="User ID is required")
         
-    # First transcribe the audio
+    # STEP 1: Transcription Process
+    print("Starting transcription process...")
     transcription = await transcribe_audio(file)
     
     # If transcription failed, return just the transcription response
     if not transcription.success:
         return VoiceQueryResponse(
             transcription=transcription,
-            query_response=None
+            query_response=None,
+            llm_processing_time=None
         )
     
-    # Get chat history for the user
-    chat_history = await conversation_manager.get_chat_history(user_id)
+    print(f"Transcription completed in {transcription.transcription_time}s: {transcription.text}")
     
-    # Convert chat history to LangChain messages
-    lc_messages = []
-    for msg in chat_history:
-        # Check if msg is a dict (from get_chat_history) or a ChatHistoryItem
-        if isinstance(msg, dict):
-            role = msg["role"]
-            content = msg["content"]
-        else:
-            role = msg.role
-            content = msg.content
-            
-        if role.lower() in ["user", "you", "human"]:
-            lc_messages.append(HumanMessage(content=content))
-        else:
-            lc_messages.append(AIMessage(content=content))
+    # STEP 2: LLM Processing
+    print("Starting LLM processing...")
+    llm_start_time = time.time()
     
-    # Get retrieval chain for this user
-    retrieval_chain = get_retrieval_chain(user_id)
-    
-    # Process query
     try:
+        # Get chat history for the user
+        chat_history = await conversation_manager.get_chat_history(user_id)
+        
+        # Convert chat history to LangChain messages
+        lc_messages = []
+        for msg in chat_history:
+            # Check if msg is a dict (from get_chat_history) or a ChatHistoryItem
+            if isinstance(msg, dict):
+                role = msg["role"]
+                content = msg["content"]
+            else:
+                role = msg.role
+                content = msg.content
+                
+            if role.lower() in ["user", "you", "human"]:
+                lc_messages.append(HumanMessage(content=content))
+            else:
+                lc_messages.append(AIMessage(content=content))
+        
+        # Get retrieval chain for this user
+        retrieval_chain = get_retrieval_chain(user_id)
+        
         # Save the transcribed query to history
         await conversation_manager.save_message(user_id, "user", transcription.text)
         
@@ -357,6 +376,9 @@ async def voice_query(
             "input": transcription.text,
             "chat_history": lc_messages
         })
+        
+        # Calculate LLM processing time
+        llm_processing_time = time.time() - llm_start_time
         
         # Save the AI's response to history
         await conversation_manager.save_message(user_id, "assistant", response["answer"])
@@ -375,16 +397,22 @@ async def voice_query(
             sources=sources
         )
         
+        print(f"LLM processing completed in {llm_processing_time:.3f}s")
+        
         return VoiceQueryResponse(
             transcription=transcription,
-            query_response=query_response
+            query_response=query_response,
+            llm_processing_time=round(llm_processing_time, 3)
         )
+        
     except Exception as e:
+        llm_processing_time = time.time() - llm_start_time
         print(f"Error processing voice query: {str(e)}")
         # Return successful transcription but failed query
         return VoiceQueryResponse(
             transcription=transcription,
-            query_response=None
+            query_response=None,
+            llm_processing_time=round(llm_processing_time, 3)
         )
 
 @app.get("/history", response_model=Dict[str, List[Dict[str, str]]])

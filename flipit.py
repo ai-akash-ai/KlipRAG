@@ -78,7 +78,6 @@ with st.sidebar:
                 st.success(f"API Status: {health_data['status']}")
                 st.info(f"Database: {health_data['database']}")
                 st.info(f"Whisper Model: {health_data['whisper_model']}")
-                st.info(f"SearchAPI: {health_data.get('searchapi', 'not configured')}")
             else:
                 st.error("API is available but returned an error")
         except requests.exceptions.ConnectionError:
@@ -87,7 +86,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### About")
     st.markdown("This application allows you to query your expenses using natural language. You can type your questions or use voice input.")
-    st.markdown("Powered by LangChain, Google Gemini, OpenAI Whisper, and Google Shopping API.")
+    st.markdown("Powered by LangChain, Google Gemini, and OpenAI Whisper.")
 
 # Main content
 st.title("AI Expense Assistant")
@@ -179,6 +178,56 @@ def stop_recording_click():
     status_placeholder.info("Processing audio...")
     st.rerun()
 
+# Function to process audio recording and send to API
+def process_audio_recording(audio_filename, audio_bytes):
+    status_placeholder.info("Sending audio to API for transcription and processing...")
+    
+    try:
+        # Prepare the file for upload
+        files = {'file': ('audio.wav', audio_bytes, 'audio/wav')}
+        
+        # Send the audio to the voice-query endpoint
+        response = requests.post(
+            f"{API_URL}/voice-query/{st.session_state.user_id}",
+            files=files
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            transcription = result.get("transcription", {})
+            query_response = result.get("query_response", None)
+            
+            if transcription.get("success", False):
+                transcribed_text = transcription.get("text", "")
+                
+                # Display the transcribed text as user message
+                add_message("user", transcribed_text)
+                with st.chat_message("user"):
+                    st.write(transcribed_text)
+                    
+                # Display a player for the recorded audio
+                st.audio(audio_bytes, format="audio/wav")
+                
+                if query_response:
+                    # Store the sources
+                    st.session_state.sources = query_response.get("sources", [])
+                    
+                    # Display the assistant's response
+                    answer = query_response.get("answer", "")
+                    add_message("assistant", answer)
+                    with st.chat_message("assistant"):
+                        st.write(answer)
+                    
+                    status_placeholder.success("Voice query processed successfully!")
+                else:
+                    status_placeholder.warning("Transcription succeeded but query processing failed.")
+            else:
+                status_placeholder.error(f"Transcription failed: {transcription.get('message')}")
+        else:
+            status_placeholder.error(f"API returned status code {response.status_code}")
+    except Exception as e:
+        status_placeholder.error(f"Error processing voice query: {e}")
+
 # Handle voice recording
 def handle_voice_recording():
     if st.session_state.recording and not st.session_state.audio_filename:
@@ -236,7 +285,7 @@ def handle_voice_recording():
                 audio_data = np.concatenate(audio_chunks, axis=0)
                 sf.write(audio_filename, audio_data, SAMPLE_RATE)
                 
-                # Read the file into memory to display later
+                # Read the file into memory
                 with open(audio_filename, 'rb') as f:
                     audio_bytes = f.read()
                 
@@ -244,58 +293,10 @@ def handle_voice_recording():
                 st.session_state.audio_filename = audio_filename
                 st.session_state.audio_bytes = audio_bytes
                 
-                # If we reached the end naturally (not by pressing Stop), update the recording state
+                # If we reached max duration (not by pressing Stop), update the recording state
                 if (time.time() - start_time) >= MAX_RECORDING_DURATION:
                     st.session_state.recording = False
                 
-                # Send the audio to the API for voice query
-                status_placeholder.info("Sending audio to API for transcription and processing...")
-                
-                try:
-                    # Prepare the file for upload
-                    files = {'file': ('audio.wav', audio_bytes, 'audio/wav')}
-                    
-                    # Send the audio to the voice-query endpoint with user_id as a query parameter
-                    response = requests.post(
-                        f"{API_URL}/voice-query?user_id={st.session_state.user_id}",
-                        files=files
-                    )
-                    
-                    if response.status_code == 200:
-                        result = response.json()
-                        transcription = result.get("transcription", {})
-                        query_response = result.get("query_response", None)
-                        
-                        if transcription.get("success", False):
-                            transcribed_text = transcription.get("text", "")
-                            
-                            # Display the transcribed text as user message
-                            add_message("user", transcribed_text)
-                            with st.chat_message("user"):
-                                st.write(transcribed_text)
-                                
-                            # Display a player for the recorded audio
-                            st.audio(audio_bytes, format="audio/wav")
-                            
-                            if query_response:
-                                # Store the sources
-                                st.session_state.sources = query_response.get("sources", [])
-                                
-                                # Display the assistant's response
-                                answer = query_response.get("answer", "")
-                                add_message("assistant", answer)
-                                with st.chat_message("assistant"):
-                                    st.write(answer)
-                                
-                                status_placeholder.success("Voice query processed successfully!")
-                            else:
-                                status_placeholder.warning("Transcription succeeded but query processing failed.")
-                        else:
-                            status_placeholder.error(f"Transcription failed: {transcription.get('message')}")
-                    else:
-                        status_placeholder.error(f"API returned status code {response.status_code}")
-                except Exception as e:
-                    status_placeholder.error(f"Error processing voice query: {e}")
             else:
                 status_placeholder.warning("No audio recorded.")
                 st.session_state.recording = False
@@ -303,6 +304,12 @@ def handle_voice_recording():
         except Exception as e:
             st.error(f"Error during recording: {e}")
             st.session_state.recording = False
+    
+    # Process the recorded audio if recording has just stopped and we have audio
+    elif not st.session_state.recording and st.session_state.audio_filename and st.session_state.audio_bytes:
+        process_audio_recording(st.session_state.audio_filename, st.session_state.audio_bytes)
+        # Clear audio from session state so we don't process it again
+        st.session_state.audio_filename = None
 
 # Check for voice recording status and handle it
 handle_voice_recording()
@@ -316,44 +323,14 @@ if st.session_state.sources:
             # Display metadata if available
             if "metadata" in source:
                 metadata = source["metadata"]
-                
-                # Check if this is a Google Shopping result
-                if metadata.get("source") == "google_shopping":
-                    st.markdown("🛒 **Google Shopping Result**")
-                    if metadata.get("title"):
-                        st.markdown(f"**Product:** {metadata.get('title')}")
-                    if metadata.get("price"):
-                        st.markdown(f"**Price:** {metadata.get('price')}")
-                    if metadata.get("store"):
-                        st.markdown(f"**Store:** {metadata.get('store')}")
-                    if metadata.get("rating"):
-                        st.markdown(f"**Rating:** {metadata.get('rating')}")
-                    if metadata.get("reviews"):
-                        st.markdown(f"**Reviews:** {metadata.get('reviews')}")
-                    if metadata.get("delivery"):
-                        st.markdown(f"**Delivery:** {metadata.get('delivery')}")
-                    if metadata.get("condition"):
-                        st.markdown(f"**Condition:** {metadata.get('condition')}")
-                    if metadata.get("link"):
-                        st.markdown(f"🔗 **[View Product]({metadata.get('link')})**")
-                    if metadata.get("thumbnail"):
-                        st.image(metadata.get("thumbnail"), width=100)
-                else:
-                    # Regular database result
-                    st.markdown("📊 **Database Result**")
-                    if metadata.get("expenseDate") or metadata.get("date"):
-                        date_val = metadata.get("expenseDate") or metadata.get("date")
-                        st.markdown(f"**Date:** {date_val}")
-                    if metadata.get("merchant"):
-                        st.markdown(f"**Merchant:** {metadata.get('merchant')}")
-                    if metadata.get("amount"):
-                        currency = metadata.get("currency", "")
-                        st.markdown(f"**Amount:** {metadata.get('amount')} {currency}")
-                    if metadata.get("category"):
-                        st.markdown(f"**Category:** {metadata.get('category')}")
-                    if metadata.get("user_id"):
-                        # For recommendation queries, show this as "Another user purchased"
-                        st.markdown(f"**User:** {metadata.get('user_id')}")
+                if "date" in metadata:
+                    st.markdown(f"**Date:** {metadata.get('date')}")
+                if "merchant" in metadata:
+                    st.markdown(f"**Merchant:** {metadata.get('merchant')}")
+                if "total_amount" in metadata:
+                    st.markdown(f"**Amount:** ${metadata.get('total_amount')}")
+                if "category" in metadata:
+                    st.markdown(f"**Category:** {metadata.get('category')}")
             
             # Display content
             st.markdown("**Content:**")
@@ -398,7 +375,14 @@ with tab2:
             key="stop_record"
         )
     
-    st.write("Click 'Start Recording' and ask your question. Click 'Stop Recording' when finished.")
+    # Display audio status or player
+    if st.session_state.recording:
+        st.write("Recording in progress... Click 'Stop Recording' when finished.")
+    elif st.session_state.audio_bytes:
+        st.write("Audio recorded and processed.")
+        st.audio(st.session_state.audio_bytes, format="audio/wav")
+    else:
+        st.write("Click 'Start Recording' and ask your question. Click 'Stop Recording' when finished.")
 
 # Chat input at the bottom (alternative to the tabs)
 if query := st.chat_input("Type a question here..."):
@@ -406,4 +390,4 @@ if query := st.chat_input("Type a question here..."):
 
 # Footer
 st.markdown("---")
-st.markdown("AI Expense Assistant | Powered by LangChain, Google Gemini, OpenAI Whisper, and Google Shopping API")
+st.markdown("AI Expense Assistant | Powered by LangChain, Google Gemini, and OpenAI Whisper")

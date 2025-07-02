@@ -59,7 +59,7 @@ with st.sidebar:
     # Clear chat history
     if st.button("Clear Chat History"):
         try:
-            response = requests.delete(f"{API_URL}/history/{st.session_state.user_id}")
+            response = requests.delete(f"{API_URL}/history?user_id={st.session_state.user_id}")
             if response.status_code == 200:
                 st.session_state.messages = []
                 st.success("Chat history cleared!")
@@ -78,7 +78,6 @@ with st.sidebar:
                 st.success(f"API Status: {health_data['status']}")
                 st.info(f"Database: {health_data['database']}")
                 st.info(f"Whisper Model: {health_data['whisper_model']}")
-                st.info(f"SearchAPI: {health_data.get('searchapi', 'not configured')}")
             else:
                 st.error("API is available but returned an error")
         except requests.exceptions.ConnectionError:
@@ -87,7 +86,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### About")
     st.markdown("This application allows you to query your expenses using natural language. You can type your questions or use voice input.")
-    st.markdown("Powered by LangChain, Google Gemini, OpenAI Whisper, and Google Shopping API.")
+    st.markdown("Powered by LangChain, Google Gemini, and OpenAI Whisper.")
 
 # Main content
 st.title("AI Expense Assistant")
@@ -98,7 +97,7 @@ status_placeholder = st.empty()
 # Function to load chat history from API
 def load_chat_history():
     try:
-        response = requests.get(f"{API_URL}/history/{st.session_state.user_id}")
+        response = requests.get(f"{API_URL}/history?user_id={st.session_state.user_id}")
         if response.status_code == 200:
             history_data = response.json()
             st.session_state.messages = history_data["messages"]
@@ -265,14 +264,27 @@ def handle_voice_recording():
                         result = response.json()
                         transcription = result.get("transcription", {})
                         query_response = result.get("query_response", None)
+                        llm_processing_time = result.get("llm_processing_time", None)
                         
                         if transcription.get("success", False):
                             transcribed_text = transcription.get("text", "")
+                            transcription_time = transcription.get("transcription_time", None)
                             
                             # Display the transcribed text as user message
                             add_message("user", transcribed_text)
                             with st.chat_message("user"):
                                 st.write(transcribed_text)
+                                
+                                # Display timing information in a nice format
+                                timing_info = []
+                                if transcription_time is not None:
+                                    timing_info.append(f"🎤 **Transcription:** {transcription_time}s")
+                                if llm_processing_time is not None:
+                                    timing_info.append(f"🤖 **LLM Processing:** {llm_processing_time}s")
+                                if timing_info:
+                                    total_time = (transcription_time or 0) + (llm_processing_time or 0)
+                                    timing_info.append(f"⏱️ **Total Time:** {total_time:.3f}s")
+                                    st.info(" | ".join(timing_info))
                                 
                             # Display a player for the recorded audio
                             st.audio(audio_bytes, format="audio/wav")
@@ -290,6 +302,8 @@ def handle_voice_recording():
                                 status_placeholder.success("Voice query processed successfully!")
                             else:
                                 status_placeholder.warning("Transcription succeeded but query processing failed.")
+                                if llm_processing_time is not None:
+                                    st.warning(f"LLM processing failed after {llm_processing_time}s")
                         else:
                             status_placeholder.error(f"Transcription failed: {transcription.get('message')}")
                     else:
@@ -316,44 +330,14 @@ if st.session_state.sources:
             # Display metadata if available
             if "metadata" in source:
                 metadata = source["metadata"]
-                
-                # Check if this is a Google Shopping result
-                if metadata.get("source") == "google_shopping":
-                    st.markdown("🛒 **Google Shopping Result**")
-                    if metadata.get("title"):
-                        st.markdown(f"**Product:** {metadata.get('title')}")
-                    if metadata.get("price"):
-                        st.markdown(f"**Price:** {metadata.get('price')}")
-                    if metadata.get("store"):
-                        st.markdown(f"**Store:** {metadata.get('store')}")
-                    if metadata.get("rating"):
-                        st.markdown(f"**Rating:** {metadata.get('rating')}")
-                    if metadata.get("reviews"):
-                        st.markdown(f"**Reviews:** {metadata.get('reviews')}")
-                    if metadata.get("delivery"):
-                        st.markdown(f"**Delivery:** {metadata.get('delivery')}")
-                    if metadata.get("condition"):
-                        st.markdown(f"**Condition:** {metadata.get('condition')}")
-                    if metadata.get("link"):
-                        st.markdown(f"🔗 **[View Product]({metadata.get('link')})**")
-                    if metadata.get("thumbnail"):
-                        st.image(metadata.get("thumbnail"), width=100)
-                else:
-                    # Regular database result
-                    st.markdown("📊 **Database Result**")
-                    if metadata.get("expenseDate") or metadata.get("date"):
-                        date_val = metadata.get("expenseDate") or metadata.get("date")
-                        st.markdown(f"**Date:** {date_val}")
-                    if metadata.get("merchant"):
-                        st.markdown(f"**Merchant:** {metadata.get('merchant')}")
-                    if metadata.get("amount"):
-                        currency = metadata.get("currency", "")
-                        st.markdown(f"**Amount:** {metadata.get('amount')} {currency}")
-                    if metadata.get("category"):
-                        st.markdown(f"**Category:** {metadata.get('category')}")
-                    if metadata.get("user_id"):
-                        # For recommendation queries, show this as "Another user purchased"
-                        st.markdown(f"**User:** {metadata.get('user_id')}")
+                if "date" in metadata:
+                    st.markdown(f"**Date:** {metadata.get('date')}")
+                if "merchant" in metadata:
+                    st.markdown(f"**Merchant:** {metadata.get('merchant')}")
+                if "total_amount" in metadata:
+                    st.markdown(f"**Amount:** ${metadata.get('total_amount')}")
+                if "category" in metadata:
+                    st.markdown(f"**Category:** {metadata.get('category')}")
             
             # Display content
             st.markdown("**Content:**")
@@ -406,4 +390,4 @@ if query := st.chat_input("Type a question here..."):
 
 # Footer
 st.markdown("---")
-st.markdown("AI Expense Assistant | Powered by LangChain, Google Gemini, OpenAI Whisper, and Google Shopping API")
+st.markdown("AI Expense Assistant | Powered by LangChain, Google Gemini, and OpenAI Whisper")

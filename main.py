@@ -1,15 +1,10 @@
 import os
-import tempfile
-import time
-import uuid
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Depends, Body, Query, File, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, HTTPException, Depends, Body, Query
 from pydantic import BaseModel, Field
 import uvicorn
-import whisper
 
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_mongodb import MongoDBAtlasVectorSearch
@@ -23,42 +18,13 @@ from langchain_core.messages import HumanMessage, AIMessage
 load_dotenv()
 MONGO_URI = os.getenv("MONGO_URI")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-port = int(os.environ.get("PORT", 8000))
-
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="AI Expense Assistant API with Voice Transcription",
-    description="API for querying expense data using natural language and voice",
+    title="AI Expense Assistant API",
+    description="API for querying expense data using natural language",
     version="1.0.0",
 )
-
-# Configure CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # In production, specify your React Native app's URL
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Initialize whisper model
-model = None
-
-@app.on_event("startup")
-async def startup_event():
-    global model
-    try:
-        # Load whisper model
-        model = whisper.load_model("base")
-        print("Whisper model loaded successfully")
-        
-        # Create MongoDB indexes
-        conversations_collection = client["klip"]["user_conversations"]
-        conversations_collection.create_index([("user_id", 1), ("timestamp", -1)])
-        print("MongoDB indexes created successfully")
-    except Exception as e:
-        print(f"Error during startup: {e}")
 
 # Initialize embeddings and MongoDB connection
 embeddings = GoogleGenerativeAIEmbeddings(
@@ -66,14 +32,17 @@ embeddings = GoogleGenerativeAIEmbeddings(
     task_type="RETRIEVAL_QUERY"
 )
 client = MongoClient(MONGO_URI)
-db = client["klip"]
-collection = db["flattened_manual_expenses"]
-conversations_collection = db["user_conversations_items"]
+db = client["bem"]
+collection = db["flattened_expenses_googleai"]
+conversations_collection = db["user_conversations"]
+
+# Create index for faster conversation querying
+conversations_collection.create_index([("user_id", 1), ("timestamp", -1)])
 
 vector_store = MongoDBAtlasVectorSearch(
     collection=collection,
     embedding=embeddings,
-    index_name="receipts_vector_index_dev"
+    index_name="receipts_vector_index"
 )
 
 # Initialize LLM
@@ -104,15 +73,6 @@ class SourceReceipt(BaseModel):
 class QueryResponse(BaseModel):
     answer: str
     sources: List[Dict[str, Any]]
-
-class TranscriptionResponse(BaseModel):
-    success: bool
-    message: str
-    text: Optional[str] = None
-
-class VoiceQueryResponse(BaseModel):
-    transcription: TranscriptionResponse
-    query_response: Optional[QueryResponse] = None
 
 # Conversation Manager class for handling chat history
 class ConversationManager:
@@ -196,7 +156,7 @@ def get_retrieval_chain(user_id: str):
 
 @app.get("/")
 async def root():
-    return {"message": "Welcome to the AI Expense Assistant API with Voice Integration"}
+    return {"message": "Welcome to the AI Expense Assistant API"}
 
 @app.post("/query", response_model=QueryResponse)
 async def query_expenses(
@@ -212,24 +172,14 @@ async def query_expenses(
     if not chat_history:
         chat_history = await conversation_manager.get_chat_history(request.user_id)
     
-    # Convert chat history to LangChain messages with proper validation
+    # Convert chat history to LangChain messages
     lc_messages = []
     for msg in chat_history:
-        # Check if msg is a dict (from get_chat_history) or a ChatHistoryItem
-        if isinstance(msg, dict):
-            role = msg.get("role", "")
-            content = msg.get("content", "")
+        if msg.role.lower() in ["user", "you", "human"]:
+            lc_messages.append(HumanMessage(content=msg.content))
         else:
-            role = getattr(msg, "role", "")
-            content = getattr(msg, "content", "")
-        
-        # Strict validation - only add if both role and content are valid
-        if role and content and content.strip():
-            if role.lower() in ["user", "you", "human"]:
-                lc_messages.append(HumanMessage(content=content))
-            else:
-                lc_messages.append(AIMessage(content=content))
-
+            lc_messages.append(AIMessage(content=msg.content))
+    
     # Get retrieval chain for this user
     retrieval_chain = get_retrieval_chain(request.user_id)
     
@@ -260,126 +210,6 @@ async def query_expenses(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing query: {str(e)}")
-
-@app.post("/transcribe", response_model=TranscriptionResponse)
-async def transcribe_audio(file: UploadFile = File(...)):
-    if not model:
-        return TranscriptionResponse(
-            success=False,
-            message="Whisper model not loaded correctly",
-            text=None
-        )
-    
-    try:
-        # Create a temporary file to save the uploaded audio
-        temp_dir = tempfile.gettempdir()
-        file_id = str(uuid.uuid4())
-        audio_path = os.path.join(temp_dir, f"recording_{file_id}.wav")
-        
-        # Save uploaded file to the temporary location
-        with open(audio_path, "wb") as buffer:
-            buffer.write(await file.read())
-        
-        # Transcribe the audio file with whisper
-        result = model.transcribe(audio_path)
-        transcript = result["text"]
-        
-        # Clean up the temporary file
-        try:
-            os.remove(audio_path)
-        except:
-            pass
-        
-        return TranscriptionResponse(
-            success=True,
-            message="Transcription completed successfully",
-            text=transcript
-        )
-    
-    except Exception as e:
-        return TranscriptionResponse(
-            success=False,
-            message=f"Error during transcription: {str(e)}",
-            text=None
-        )
-
-@app.post("/voice-query/{user_id}", response_model=VoiceQueryResponse)
-async def voice_query(
-    user_id: str, 
-    file: UploadFile = File(...),
-    conversation_manager: ConversationManager = Depends(get_conversation_manager)
-):
-    # First transcribe the audio
-    transcription = await transcribe_audio(file)
-    
-    # If transcription failed, return just the transcription response
-    if not transcription.success:
-        return VoiceQueryResponse(
-            transcription=transcription,
-            query_response=None
-        )
-    
-    # Get chat history for the user
-    chat_history = await conversation_manager.get_chat_history(user_id)
-    
-    # Convert chat history to LangChain messages
-    lc_messages = []
-    for msg in chat_history:
-        # Check if msg is a dict (from get_chat_history) or a ChatHistoryItem
-        if isinstance(msg, dict):
-            role = msg["role"]
-            content = msg["content"]
-        else:
-            role = msg.role
-            content = msg.content
-            
-        if role.lower() in ["user", "you", "human"]:
-            lc_messages.append(HumanMessage(content=content))
-        else:
-            lc_messages.append(AIMessage(content=content))
-    
-    # Get retrieval chain for this user
-    retrieval_chain = get_retrieval_chain(user_id)
-    
-    # Process query
-    try:
-        # Save the transcribed query to history
-        await conversation_manager.save_message(user_id, "user", transcription.text)
-        
-        # Directly invoke the retrieval chain (same as in query_expenses)
-        response = retrieval_chain.invoke({
-            "input": transcription.text,
-            "chat_history": lc_messages
-        })
-        
-        # Save the AI's response to history
-        await conversation_manager.save_message(user_id, "assistant", response["answer"])
-        
-        # Format sources for the response
-        sources = []
-        for doc in response["context"]:
-            sources.append({
-                "content": doc.page_content,
-                "metadata": doc.metadata
-            })
-        
-        # Create the query response object
-        query_response = QueryResponse(
-            answer=response["answer"],
-            sources=sources
-        )
-        
-        return VoiceQueryResponse(
-            transcription=transcription,
-            query_response=query_response
-        )
-    except Exception as e:
-        print(f"Error processing voice query: {str(e)}")
-        # Return successful transcription but failed query
-        return VoiceQueryResponse(
-            transcription=transcription,
-            query_response=None
-        )
 
 @app.get("/history/{user_id}")
 async def get_chat_history(
@@ -423,14 +253,9 @@ async def health_check():
     try:
         # Test connection to MongoDB
         client.admin.command('ping')
-        whisper_loaded = model is not None
-        return {
-            "status": "healthy", 
-            "database": "connected",
-            "whisper_model": "loaded" if whisper_loaded else "not loaded"
-        }
+        return {"status": "healthy", "database": "connected"}
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Service unhealthy: {str(e)}")
 
 if __name__ == "__main__":
-    uvicorn.run("original-server:app", host="0.0.0.0", port=port, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
