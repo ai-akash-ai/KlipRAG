@@ -436,7 +436,7 @@ async def get_retrieval_chain(user_id: str, query: str):
         Conversation History:
         {chat_history}
 
-        When providing recommendations, use the retailer data to suggest where users can buy items. Mention that "someone has purchased [item] at [retailer name]" and include location information when available. Focus on real purchase data from the retailer database."""
+        When providing recommendations, use the retailer data to suggest where users can buy items. Mention that "Another user of the app has purchased [item] at [retailer name] for [price]" and include location information when available along with date of purchase. Focus on real purchase data from the retailer database."""
 
     qa_prompt = ChatPromptTemplate.from_messages([
         ("system", system_prompt),
